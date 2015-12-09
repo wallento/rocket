@@ -45,6 +45,11 @@ abstract trait RocketCoreParameters extends CoreParameters
 abstract class CoreBundle extends Bundle with CoreParameters
 abstract class CoreModule(resetSignal:Bool = null) extends Module(_reset = resetSignal) with CoreParameters
 
+class Trace extends Bundle with CoreParameters {
+  val pc = UInt(width=xLen)
+  val inst = UInt(width=coreInstBits)
+}
+
 class Rocket (id:Int, resetSignal:Bool = null) extends CoreModule(resetSignal)
 {
   val io = new Bundle {
@@ -55,6 +60,7 @@ class Rocket (id:Int, resetSignal:Bool = null) extends CoreModule(resetSignal)
     val rocc = new RoCCInterface().flip
     val pcr = new PCRIO
     val irq = Bool(INPUT)
+    val tracer = Decoupled(new Trace)
   }
 
   var decode_table = XDecode.table
@@ -312,7 +318,7 @@ class Rocket (id:Int, resetSignal:Bool = null) extends CoreModule(resetSignal)
   val replay_wb_common =
     io.dmem.resp.bits.nack || wb_reg_replay || csr.io.csr_replay
   val wb_rocc_val = wb_reg_valid && wb_ctrl.rocc && !replay_wb_common
-  val replay_wb = replay_wb_common || wb_reg_valid && wb_ctrl.rocc && !io.rocc.cmd.ready
+  val replay_wb = !io.tracer.ready || replay_wb_common || wb_reg_valid && wb_ctrl.rocc && !io.rocc.cmd.ready
   val wb_xcpt = wb_reg_xcpt || csr.io.csr_xcpt
   take_pc_wb := replay_wb || wb_xcpt || csr.io.eret
 
@@ -521,6 +527,17 @@ class Rocket (id:Int, resetSignal:Bool = null) extends CoreModule(resetSignal)
          wb_reg_inst(24,20), Reg(next=Reg(next=ex_rs(1))),
          wb_reg_inst, wb_reg_inst)
   }
+
+  // hardware tracer
+  io.tracer.valid := 
+    wb_valid && (
+      wb_reg_inst(6,0) === UInt("b1100011") || // branch
+      wb_reg_inst(6,0) === UInt("b0010111") || // AUIPC
+      wb_reg_inst === Instructions.SCALL ||
+      wb_reg_inst === Instructions.SRET
+    )
+  io.tracer.bits.pc := wb_reg_pc
+  io.tracer.bits.inst := wb_reg_inst
 
   def checkExceptions(x: Seq[(Bool, UInt)]) =
     (x.map(_._1).reduce(_||_), PriorityMux(x))

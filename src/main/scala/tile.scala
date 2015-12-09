@@ -14,6 +14,7 @@ abstract class Tile extends Module {
     val pcr = new PCRIO
     val irq = Bool(INPUT)
     val soft_reset = Bool(INPUT)
+    val tracer = Decoupled(new Trace)
   }
 }
 
@@ -41,6 +42,7 @@ class RocketTile(id: Int = 0) extends Tile {
   core.io.ptw <> ptw.io.dpath
   core.io.pcr <> io.pcr
   core.io.irq <> io.irq
+  core.io.tracer <> io.tracer
 
   //If so specified, build an FPU module and wire it in
   if(params(BuildFPU)) {
