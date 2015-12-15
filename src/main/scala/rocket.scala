@@ -48,6 +48,7 @@ abstract class CoreModule(resetSignal:Bool = null) extends Module(_reset = reset
 class Trace extends Bundle with CoreParameters {
   val pc = UInt(width=xLen)
   val inst = UInt(width=coreInstBits)
+  val jmp = Bool()
 }
 
 class Rocket (id:Int, resetSignal:Bool = null) extends CoreModule(resetSignal)
@@ -104,6 +105,7 @@ class Rocket (id:Int, resetSignal:Bool = null) extends CoreModule(resetSignal)
   val wb_reg_cause           = Reg(UInt())
   val wb_reg_rocc_pending    = Reg(init=Bool(false))
   val wb_reg_pc              = Reg(UInt())
+  val wb_reg_npc             = Reg(UInt())
   val wb_reg_inst            = Reg(Bits())
   val wb_reg_wdata           = Reg(Bits())
   val wb_reg_rs2             = Reg(Bits())
@@ -312,15 +314,17 @@ class Rocket (id:Int, resetSignal:Bool = null) extends CoreModule(resetSignal)
     }
     wb_reg_inst := mem_reg_inst
     wb_reg_pc := mem_reg_pc
+    wb_reg_npc := mem_npc
   }
 
   val wb_set_sboard = wb_ctrl.div || wb_dcache_miss || wb_ctrl.rocc
   val replay_wb_common =
     io.dmem.resp.bits.nack || wb_reg_replay || csr.io.csr_replay
   val wb_rocc_val = wb_reg_valid && wb_ctrl.rocc && !replay_wb_common
-  val replay_wb = !io.tracer.ready || replay_wb_common || wb_reg_valid && wb_ctrl.rocc && !io.rocc.cmd.ready
+  val replay_wb = replay_wb_common || wb_reg_valid && wb_ctrl.rocc && !io.rocc.cmd.ready
+  val replay_trace = wb_reg_valid && !io.tracer.ready
   val wb_xcpt = wb_reg_xcpt || csr.io.csr_xcpt
-  take_pc_wb := replay_wb || wb_xcpt || csr.io.eret
+  take_pc_wb := replay_trace || replay_wb || wb_xcpt || csr.io.eret
 
   when (wb_rocc_val) { wb_reg_rocc_pending := !io.rocc.cmd.ready }
   when (wb_reg_xcpt) { wb_reg_rocc_pending := Bool(false) }
@@ -353,7 +357,7 @@ class Rocket (id:Int, resetSignal:Bool = null) extends CoreModule(resetSignal)
     ll_wen := Bool(true)
   }
 
-  val wb_valid = wb_reg_valid && !replay_wb && !csr.io.csr_xcpt
+  val wb_valid = wb_reg_valid && !replay_trace && !replay_wb && !csr.io.csr_xcpt
   val wb_wen = wb_valid && wb_ctrl.wxd
   val rf_wen = wb_wen || ll_wen 
   val rf_waddr = Mux(ll_wen, ll_waddr, wb_waddr)
@@ -435,9 +439,10 @@ class Rocket (id:Int, resetSignal:Bool = null) extends CoreModule(resetSignal)
 
   io.imem.req.valid := take_pc
   io.imem.req.bits.pc :=
+    Mux(replay_trace,           wb_reg_pc,       // trace replay
     Mux(wb_xcpt || csr.io.eret, csr.io.evec,     // exception or [m|s]ret
     Mux(replay_wb,              wb_reg_pc,       // replay
-                                mem_npc)).toUInt // mispredicted branch
+                                mem_npc))).toUInt // mispredicted branch
   io.imem.invalidate := wb_reg_valid && wb_ctrl.fence_i
   io.imem.resp.ready := !ctrl_stalld || csr.io.interrupt
 
@@ -520,24 +525,29 @@ class Rocket (id:Int, resetSignal:Bool = null) extends CoreModule(resetSignal)
     }
   }
   else {
+    when(wb_valid) {
     printf("C%d: %d [%d] pc=[%x] W[r%d=%x][%d] R[r%d=%x] R[r%d=%x] inst=[%x] DASM(%x)\n",
          UInt(id), csr.io.time(32,0), wb_valid, wb_reg_pc,
          Mux(rf_wen, rf_waddr, UInt(0)), rf_wdata, rf_wen,
          wb_reg_inst(19,15), Reg(next=Reg(next=ex_rs(0))),
          wb_reg_inst(24,20), Reg(next=Reg(next=ex_rs(1))),
          wb_reg_inst, wb_reg_inst)
+    }
   }
 
   // hardware tracer
-  io.tracer.valid := 
-    wb_valid && (
-      wb_reg_inst(6,0) === UInt("b1100011") || // branch
-      wb_reg_inst(6,0) === UInt("b0010111") || // AUIPC
-      wb_reg_inst === Instructions.SCALL ||
-      wb_reg_inst === Instructions.SRET
-    )
+  val trace_jump = csr.io.eret || wb_xcpt || (mem_xcpt && !take_pc_wb && !ctrl_killm)
+  val trace_cnt = Reg(init=UInt(0, 3))
+  when(io.tracer.ready && trace_jump) {
+    trace_cnt := 1
+  }.elsewhen(io.tracer.valid && trace_cnt != UInt(0)) {
+    trace_cnt := trace_cnt - UInt(1)
+  }
+
+  io.tracer.valid := io.tracer.ready && ( trace_jump || wb_valid && trace_cnt != UInt(0))
   io.tracer.bits.pc := wb_reg_pc
   io.tracer.bits.inst := wb_reg_inst
+  io.tracer.bits.jmp := trace_jump
 
   def checkExceptions(x: Seq[(Bool, UInt)]) =
     (x.map(_._1).reduce(_||_), PriorityMux(x))
