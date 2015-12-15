@@ -536,18 +536,28 @@ class Rocket (id:Int, resetSignal:Bool = null) extends CoreModule(resetSignal)
   }
 
   // hardware tracer
-  val trace_jump = csr.io.eret || wb_xcpt || (mem_xcpt && !take_pc_wb && !ctrl_killm)
-  val trace_cnt = Reg(init=UInt(0, 3))
-  when(io.tracer.ready && trace_jump) {
-    trace_cnt := 1
-  }.elsewhen(io.tracer.valid && trace_cnt != UInt(0)) {
-    trace_cnt := trace_cnt - UInt(1)
+  val trace_trigger_main = csr.io.eret || wb_xcpt || (mem_xcpt && !take_pc_wb && !ctrl_killm)
+  val trace_trigger_minor = wb_valid && ( wb_reg_npc.toSInt != wb_reg_pc.toSInt + SInt(4))
+  val trace_cnt_main = Reg(init=UInt(0, 4))
+  val trace_cnt_minor = Reg(init=UInt(0, 4))
+  when(io.tracer.ready && trace_trigger_main) {
+    trace_cnt_main := UInt(8)
+    trace_cnt_minor := UInt(1)
+  }.elsewhen(trace_trigger_minor && trace_cnt_main != UInt(0)) {
+    trace_cnt_main := trace_cnt_main - UInt(1)
+    trace_cnt_minor := UInt(1)
+  }.elsewhen(wb_valid && trace_cnt_minor != UInt(0)) {
+    trace_cnt_minor := trace_cnt_minor - UInt(1)
   }
 
-  io.tracer.valid := io.tracer.ready && ( trace_jump || wb_valid && trace_cnt != UInt(0))
+  io.tracer.valid := io.tracer.ready && ( 
+      trace_trigger_main ||
+      trace_trigger_minor && trace_cnt_main != UInt(0) ||
+      wb_valid && trace_cnt_minor != UInt(0)
+  )
   io.tracer.bits.pc := wb_reg_pc
   io.tracer.bits.inst := wb_reg_inst
-  io.tracer.bits.jmp := trace_jump
+  io.tracer.bits.jmp := trace_trigger_main
 
   def checkExceptions(x: Seq[(Bool, UInt)]) =
     (x.map(_._1).reduce(_||_), PriorityMux(x))
