@@ -83,9 +83,9 @@ class ALU(implicit p: Parameters) extends CoreModule()(p) {
               Mux(io.fn === FN_SL,                     shout_l, UInt(0))
 
   // AND, OR, XOR
-  val logic = Mux(io.fn === FN_XOR || io.fn === FN_OR, in1_xor_in2, UInt(0)) |
+  val binary_logic = Mux(io.fn === FN_XOR || io.fn === FN_OR, in1_xor_in2, UInt(0)) |
               Mux(io.fn === FN_OR || io.fn === FN_AND, io.in1 & io.in2, UInt(0))
-  val shift_logic = (isCmp(io.fn) && io.cmp_out) | logic | shout
+  val shift_logic = (isCmp(io.fn) && io.cmp_out) | binary_logic | shout
   val out = Mux(io.fn === FN_ADD || io.fn === FN_SUB, io.adder_out, shift_logic)
 
   io.out := out
